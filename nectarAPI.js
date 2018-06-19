@@ -9,6 +9,7 @@ _NectarGlobals = {
 		user_key 			: null,
 		token 				: null,
 		dev_mode 			: true,
+		member_token 		: null,
 	},
 
 	_instance 				: null,
@@ -40,9 +41,28 @@ class Nectar{
 		this.data(data);
 	}
 
+	set_token_headers(){
+		if(this.data().token !== null){
+			this.set_token(this.data().token);
+		}
+
+		if(this.data().member_token !== null){
+			this.set_member_token(this.data().member_token);
+		}
+
+		return this;
+	}
+
 	set_token(token){
 
 		$.ajaxSetup({headers: {'X-Nectar-Token': typeof(token) == 'string' ? token : token.key}});
+		
+		return this;
+	}
+
+	set_member_token(token){
+
+		$.ajaxSetup({headers: {'X-Nectar-Member-Token': typeof(token) == 'string' ? token : token.key}});
 		
 		return this;
 	}
@@ -81,12 +101,30 @@ class Nectar{
 		return this._data._association;
 	}
 
+	get_member_token(callback){
+
+		var that = this;
+
+		if($.ajaxSettings.headers !== undefined){
+			//delete $.ajaxSettings.headers['X-Nectar-Token'];
+			delete $.ajaxSettings.headers['X-Nectar-Member-Token'];
+		}
+
+		this.Request().post('request-token', {
+			member 			: true,
+			member_email 	: email,
+			member_password : password,
+			assoc_api_key 	: $this.data().association_key
+		});
+	}
+
 	get_token(callback){
 
 		var that = this;
 
 		if($.ajaxSettings.headers !== undefined){
 			delete $.ajaxSettings.headers['X-Nectar-Token'];
+			//delete $.ajaxSettings.headers['X-Nectar-Member-Token'];
 		}
 		
 		//REQUEST THE TOKEN
@@ -99,6 +137,10 @@ class Nectar{
 			if(result.success()){
 
 				var token = result;
+
+				if(that.data().member_token !== null){
+					that.set_member_token(that.data().member_token);
+				}
 
 				that.data({token: {key: result.results.token, expiration: result.results.expires_at}});
 
@@ -117,6 +159,9 @@ class Nectar{
 					}
 					else{
 
+						//TRIGGER THE LOAD EVENT
+						$(document).trigger('nectar.API.loaded', [that]);
+
 						//CHECK FOR A CALLBACK AND RUN IT IF NEEDED
 						if(typeof(callback) == 'function'){
 							callback.call(that, token);
@@ -125,6 +170,9 @@ class Nectar{
 				})
 			}
 			else{
+
+				//TRIGGER THE LOAD EVENT
+				$(document).trigger('nectar.API.loaded', [that]);
 
 
 				//CHECK FOR A CALLBACK AND RUN IT IF NEEDED
@@ -160,12 +208,27 @@ class NectarResponse extends Nectar{
 
 			var results 	= data.responseJSON.results;
 			var className 	= data.responseJSON.results.className;
+			res.results 	= results;
 
 			if(Array.isArray(results)){
 				res.results = new NectarCollection(results);
 			}
 			else if(eval("typeof "+className) == 'function'){
 				res.results = new (eval(className))(results.data);
+			}
+			else{
+				for(var x in res.results){
+					var sub_result = res.results[x];
+
+					if(typeof sub_result == 'object' && sub_result.className !== undefined){
+
+						var subClassName = sub_result.className;
+
+						if(eval("typeof "+subClassName) == 'function'){
+							res.results[x] = new (eval(subClassName))(res.results[x].data);
+						}
+					}
+				}
 			}
 		}
 
@@ -296,7 +359,7 @@ class NectarModel extends NectarModelRelationship{
 
 		this.set(data);
 		if(this.constructor.name !== 'NectarResult' && this.constructor.name !== 'NectarApiToken' && this.constructor.name !== 'NectarCollection'){
-			this._orm_data._api_url = (this.constructor.name+'').replace('Nectar', '').toLowerCase()+(typeof this.id !== 'undefined' ? '/'+this.id : '');
+			this._orm_data._api_url = (this.urlOverride !== undefined ? (this.urlOverride()) : (this.constructor.name+'').replace('Nectar', '').toLowerCase())+(typeof this.id !== 'undefined' ? '/'+this.id : '');
 		}
 	}
 
@@ -319,6 +382,22 @@ class NectarModel extends NectarModelRelationship{
 
 	Response(){
 		return new NectarResponse();
+	}
+
+	success(){
+		return true;
+	}
+
+	getData(){
+		var res = {};
+
+		for(var x in this){
+			if(x !== '__proto__'){
+				res[x] = this[x];
+			}
+		}
+
+		return res;
 	}
 
 	
@@ -360,9 +439,11 @@ class NectarModel extends NectarModelRelationship{
 
 						if(eval("typeof "+className) == 'function'){
 							data[x] = new (eval(className))(data[x].data);
-						}
-
-											
+						}											
+					}
+					else if(typeof data[x] == 'object' && data[x].date !== undefined && data[x].timezone !== undefined && data[x].timezone_type !== undefined){
+						data[x] = new Date(data[x].date);
+						//console.log(data[x].dateObj.toISOString());
 					}
 					else if(typeof(data[x]) == 'string'){
 
@@ -380,6 +461,12 @@ class NectarModel extends NectarModelRelationship{
 							data[x] = true;
 						}
 					}
+					/*
+					if(typeof data[x] == 'object' && data[x].date !== undefined && data[x].timezone !== undefined && data[x].timezone_type !== undefined){
+						data[x].dateObj = new Date(data[x].date);
+						//console.log(data[x].dateObj.toISOString());
+					}
+					*/
 				}				
 				this[x] = data[x];
 			}
@@ -390,7 +477,22 @@ class NectarModel extends NectarModelRelationship{
 	update(data, callback){
 		
 		var res = this.set(data);
-		return res.Request().post(this._orm_data._api_url, this, callback);
+		var that = this;
+		var url = (_NectarGlobals._instance._data.member_token ? 'update/' : '')+this._orm_data._api_url;
+		return res.Request().post(url, this, function(res){
+
+			if(res.success()){
+				that.set(res.results.getData());
+				//console.log(res.results);
+				//console.log(res.results.getData());
+				//that.set(this.data());
+			}
+			//console.log(this);
+			//console.log(that);
+			if(typeof callback == 'function'){
+				callback(res);
+			}
+		});
 	}
 
 	data(){
@@ -504,6 +606,10 @@ class NectarResult extends NectarModel{
 		return this.status == 'error' ? true : false;
 	}
 
+	errorMessages(){
+		return new NectarCollection(this.errors.errors);
+	}
+
 	each(callback){
 		this.results.each(callback);
 	}
@@ -515,6 +621,211 @@ class NectarApiToken extends NectarModel{
 		super(data);
 
 		return this;
+	}
+}
+
+class NectarVenue extends NectarModel{
+
+	constructor(data){
+		super(data);
+
+		return this;
+	}
+}
+
+class NectarEvent extends NectarModel{
+
+	constructor(data){
+		super(data);
+
+		return this;
+	}
+}
+
+class NectarPhone extends NectarModel{
+
+	constructor(data){
+		super(data);
+
+		return this;
+	}
+
+	urlOverride(){
+		return 'phone';
+	}
+
+	create(data = {}, callback){
+		this.set(data);
+		return this.Request().post('phone/add', this, callback);
+	}
+
+	update(data = {}, callback){
+		this.set(data);
+		return this.Request().post('phone/update/'+this.id, this, callback);
+	}
+
+	remove(callback){
+		return this.Request().post('phone/delete/'+this.id, this, callback);
+	}
+}
+
+class NectarEmail extends NectarModel{
+
+	constructor(data){
+		super(data);
+
+		return this;
+	}
+
+	urlOverride(){
+		return 'email';
+	}
+
+	create(data = {}, callback){
+		this.set(data);
+		return this.Request().post('email/add', this, callback);
+	}
+
+	update(data = {}, callback){
+		this.set(data);
+		return this.Request().post('email/update/'+this.id, this, callback);
+	}
+
+	remove(callback){
+		return this.Request().post('email/delete/'+this.id, this, callback);
+	}
+}
+
+class NectarFile extends NectarModel{
+
+	constructor(data){
+		super(data);
+
+		return this;
+	}
+
+	getInputFile(input, callback){
+		var files = input.get(0).files;
+		if (files && files[0]) {
+
+			var file = files[0];
+
+			this.readFromInputFile(file).done(function(base64data){
+
+				var parts 		= base64data.split(';base64,');
+
+				callback({
+					mime_type 	: file.type,
+					b64data 	: parts[1],
+					size 		: file.size,
+					name 		: file.name,
+					ext 		: file.name.split('.').pop()
+				});
+			});
+		}
+		else{
+			callback(false);
+		}
+	}
+
+	readFromInputFile(file){
+
+		var deferred = $.Deferred();
+		var fr = new FileReader();
+		fr.onload = function(e) {
+			deferred.resolve(e.target.result);
+		};
+		fr.readAsDataURL(file);
+
+		return deferred.promise();
+	}
+
+	createFromInput(input, callback){
+
+		var that = this;
+		this.getInputFile(input, function(file){
+			that.Request().post('file/add', file, function(res){
+
+				if(typeof callback == 'function'){
+					if(res.success()){
+						callback(res.results);
+					}
+					else{
+						callback(res);
+					}
+				}
+			});
+		});
+	}
+}
+
+class NectarCreditCard extends NectarModel{
+
+	constructor(data){
+		super(data);
+
+		return this;
+	}
+
+	urlOverride(){
+		return 'card';
+	}
+
+	create(data = {}, callback){
+		this.set(data);
+		return this.Request().post('card/add', this, callback);
+	}
+
+	update(data = {}, callback){
+		this.set(data);
+		return this.Request().post('card/update/'+this.id, this, callback);
+	}
+
+	remove(callback){
+		return this.Request().post('card/delete/'+this.id, this, callback);
+	}
+
+	checkout(cartItems, callback){
+		
+		//FORCE ITEMS INTO COLLECTION
+		if(cartItems instanceof NectarCartItem){ cartItems = new NectarCollection([cartItems]); }
+
+		//DEFINE ITEM IDS
+		var cartItemIds = [];
+
+		//ADD THE ITEMS
+		cartItems.each(function(k, v){cartItemIds.push(v.id); });
+
+		//MAKE THE REQUEST
+		return this.Request().post('card/process-cart/'+this.id, {cartItems: cartItemIds}, callback);
+	}
+}
+
+class NectarCartItem extends NectarModel {
+
+	constructor(data){
+		super(data);
+
+		return this;
+	}
+
+	urlOverride(){
+		return 'cart';
+	}
+
+	create(data = {}, callback){
+		this.set(data);
+		return this.Request().post('cart/add', this, callback);
+	}
+
+	update(data = {}, callback){
+		this.set(data);
+		return this.Request().post('cart/update/'+this.id, this, callback);
+	}
+
+	remove(callback){
+		console.log(this.data());
+		return this.Request().post('cart/delete/'+this.id, this, callback);
 	}
 }
 
@@ -550,6 +861,10 @@ class NectarMember extends NectarModel{
 
 	invoices(){
 		return this.relationship('invoices');
+	}
+
+	thumbUrl(){
+		return this.image !== undefined ? this.image.thumbnail : '//placehold.it/40x40';
 	}
 }
 
@@ -669,6 +984,9 @@ class NectarRequest extends Nectar{
 	}
 
 	url(path){
+		//this.set_token_headers();
+		if(_NectarGlobals._instance._data.member_token !== null) this.set_member_token(_NectarGlobals._instance._data.member_token);
+		if(_NectarGlobals._instance._data.token !== null) this.set_token(_NectarGlobals._instance._data.token);
 		return (_NectarGlobals._instance._data.dev_mode ? _NectarGlobals._instance._data.dev_api_url : _NectarGlobals._instance._data.prod_api_url) + path;
 	}
 
