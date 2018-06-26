@@ -428,6 +428,10 @@ class NectarModel extends NectarModelRelationship{
 
 		if(typeof(data) == 'object'){
 
+			if(data.className !== undefined && data.data !== undefined && data.className == this.constructor.name){
+				return this.set(data.data);
+			}
+
 			for(var x in data){
 
 				if(data[x] !== null){
@@ -615,6 +619,33 @@ class NectarResult extends NectarModel{
 	}
 }
 
+class NectarModelApiCalls extends NectarModel {
+
+	constructor(data){
+		super(data);
+
+		return this;
+	}
+
+	urlOverride(){
+		return this.constructor.name.replace('Nectar', '').toLowerCase();
+	}
+
+	create(data = {}, callback){
+		this.set(data);
+		return this.Request().post(this.urlOverride()+'/add', this, callback);
+	}
+
+	update(data = {}, callback){
+		this.set(data);
+		return this.Request().post(this.urlOverride()+'/update/'+this.id, this, callback);
+	}
+
+	remove(callback){
+		return this.Request().post(this.urlOverride()+'/delete/'+this.id, this, callback);
+	}
+}
+
 class NectarApiToken extends NectarModel{
 
 	constructor(data){
@@ -642,7 +673,16 @@ class NectarEvent extends NectarModel{
 	}
 }
 
-class NectarPhone extends NectarModel{
+class NectarSubscription extends NectarModel {
+
+	constructor(data){
+		super(data);
+
+		return this;
+	}
+}
+
+class NectarPhone extends NectarModelApiCalls{
 
 	constructor(data){
 		super(data);
@@ -650,53 +690,36 @@ class NectarPhone extends NectarModel{
 		return this;
 	}
 
-	urlOverride(){
-		return 'phone';
-	}
-
-	create(data = {}, callback){
-		this.set(data);
-		return this.Request().post('phone/add', this, callback);
-	}
-
-	update(data = {}, callback){
-		this.set(data);
-		return this.Request().post('phone/update/'+this.id, this, callback);
-	}
-
-	remove(callback){
-		return this.Request().post('phone/delete/'+this.id, this, callback);
-	}
 }
 
-class NectarEmail extends NectarModel{
+class NectarEmail extends NectarModelApiCalls{
 
 	constructor(data){
 		super(data);
 
 		return this;
 	}
+}
 
-	urlOverride(){
-		return 'email';
-	}
+class NectarAddress extends NectarModelApiCalls{
 
-	create(data = {}, callback){
-		this.set(data);
-		return this.Request().post('email/add', this, callback);
-	}
+	constructor(data){
+		super(data);
 
-	update(data = {}, callback){
-		this.set(data);
-		return this.Request().post('email/update/'+this.id, this, callback);
-	}
-
-	remove(callback){
-		return this.Request().post('email/delete/'+this.id, this, callback);
+		return this;
 	}
 }
 
-class NectarFile extends NectarModel{
+class NectarSocialMedia extends NectarModelApiCalls{
+
+	constructor(data){
+		super(data);
+
+		return this;
+	}
+}
+
+class NectarFile extends NectarModelApiCalls{
 
 	constructor(data){
 		super(data);
@@ -744,8 +767,7 @@ class NectarFile extends NectarModel{
 
 		var that = this;
 		this.getInputFile(input, function(file){
-			that.Request().post('file/add', file, function(res){
-
+			that.create(file, function(res){
 				if(typeof callback == 'function'){
 					if(res.success()){
 						callback(res.results);
@@ -759,7 +781,7 @@ class NectarFile extends NectarModel{
 	}
 }
 
-class NectarCreditCard extends NectarModel{
+class NectarCreditCard extends NectarModelApiCalls{
 
 	constructor(data){
 		super(data);
@@ -771,6 +793,7 @@ class NectarCreditCard extends NectarModel{
 		return 'card';
 	}
 
+	/*
 	create(data = {}, callback){
 		this.set(data);
 		return this.Request().post('card/add', this, callback);
@@ -784,6 +807,7 @@ class NectarCreditCard extends NectarModel{
 	remove(callback){
 		return this.Request().post('card/delete/'+this.id, this, callback);
 	}
+	*/
 
 	checkout(cartItems, callback){
 		
@@ -824,7 +848,6 @@ class NectarCartItem extends NectarModel {
 	}
 
 	remove(callback){
-		console.log(this.data());
 		return this.Request().post('cart/delete/'+this.id, this, callback);
 	}
 }
@@ -947,12 +970,17 @@ class NectarRequest extends Nectar{
 		super();
 
 		this._ajax_call;
+		this._obj = null;
 	}
 
 	convert_data(obj, form, namespace){
 
 		if(obj instanceof FormData){
 			return obj;
+		}
+
+		if(this._obj === null && obj instanceof NectarModel){
+			this._obj = obj;
 		}
 
 		let fd = form || new FormData();
@@ -992,18 +1020,20 @@ class NectarRequest extends Nectar{
 
 	__call(d, callback){
 
-		var that = this;
+		//var that = this._obj !== null ? this._obj : this;
 
 		var params = {
 			url: '',
 			type : 'get',
 			processData: false,
 			contentType: false,
+			/*
 			complete : function(data){
 				if(typeof(callback) == 'function'){
 					callback.call(that, NectarResponse.parse(data));
 				}
 			}
+			*/
 		}
 
 		$.extend(params, d);
@@ -1012,6 +1042,25 @@ class NectarRequest extends Nectar{
 		}
 		else{
 			delete params.data;
+		}
+
+		if(typeof params.complete === 'undefined'){
+
+			var that = this._obj !== null ? this._obj : this;
+
+			params.complete = function(data){
+				if(typeof(callback) == 'function'){
+					var res = NectarResponse.parse(data);
+					if(that instanceof NectarModel && res.success()){
+						if(typeof res.results == 'object'){
+							console.log(res.results);
+							that.set(res.results.getData());
+						}
+						
+					}
+					callback.call(that, res);
+				}
+			}
 		}
 
 		return $.ajax(params);
